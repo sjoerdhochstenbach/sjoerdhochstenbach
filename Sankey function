@@ -1,0 +1,82 @@
+agg_sankey <- function(df, x, y, n_convert_to_other, text_convert_to_other , text_pathway_ending, counts_in_label = TRUE, patient_code = patient_code, alternative_pathway_ending = FALSE) {
+
+
+  df <- df %>%
+    mutate(x = {{x}}, y = {{y}}) # add x and y variable to the dataset so that if we make new x and y variables later it isnt confused with inputs {{x}} and {{y}} anymore
+
+
+  if (!missing(n_convert_to_other) & missing(text_convert_to_other)){
+    stop("You need to supply some text to argument 'text_convert_to_other' if you want to make use of converting some groups to 'Other'")
+  }
+
+
+  #Calculate the count of y per x and rank them. Group all y groups that are ranked lower than n_convert_to_other into text_convert_to_other (for example: "Other medication")
+
+  if(!missing(n_convert_to_other)) {
+
+
+    df <- df %>%
+      group_by( x ) %>%
+      add_count( y ) %>% #add count of y per x
+      mutate(r = dense_rank(desc(n)), #ranks the count of the combination within x
+             y = if_else(r < n_convert_to_other + 1, as.character( y ), text_convert_to_other),
+             x = x) %>% #if rank is smaller than n_convert_to_other paste y , otherwise convert name of y to 'Other'
+      select(-n, -r)
+
+  }
+
+
+
+  if(alternative_pathway_ending) {
+
+    no_more_treatment <- df %>%
+      group_by({{patient_code}}) %>%
+      mutate(max_x = max( x , na.rm = T) + 1, y = text_pathway_ending) %>% # Assign per patient a text (text_pathway_ending) if there pathway ended
+      mutate(x = max_x) %>%
+      distinct(patient_code,y, x)
+
+
+    df <- df %>% ungroup() %>% distinct(patient_code,y, x) %>%
+      union_all(no_more_treatment) # add no_more_treatment_line to df
+  }
+
+  # Remove duplicate values from the data (if there are any)
+  df <- df %>%
+    group_by(patient_code, x) %>%
+    mutate(n = dplyr::n(), .groups = "drop") %>%
+    filter(!n > 1L) %>%
+    select(patient_code, y, x)
+
+  # Arrange the data per treatment line and supply values from combinations to treatment line by making wider
+  df <- df %>%
+    arrange(x) %>%
+    pivot_wider(id_cols = patient_code, names_from = x, values_from = y)
+
+  # Count the distinct patients per treatment in certain treatment line (use this later for label in plot)
+  # Make a grouping variable based on row_number function
+  # Make the df in long format so we have different rows per patient instead of 1
+  df <- df %>%
+    group_by(across(-patient_code)) %>%
+    summarise(count = n_distinct(patient_code), .groups = 'drop') %>%
+    #group_by(across(everything())) %>%
+    mutate(group = row_number(desc(count))) %>%
+    pivot_longer(cols = c(-count, -group), names_to = 'x', values_to = 'y') %>%
+    arrange(desc(count), group)
+
+  if(counts_in_label){
+    # Group by treatment line and combination_names to calculate the total sum of a certain medication within treatment line. Then paste it into label
+    df<- df %>%
+      group_by(x, y) %>%
+      mutate(n = sum(count)) %>%
+      mutate(label = if_else(is.na(y), NA, paste0(y, ' (N = ', n,')') ))
+  }
+
+  else{
+    df <- mutate(df, label = y)
+  }
+
+  df %>%
+    rename(fill = y)
+
+
+}
